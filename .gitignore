@@ -1,3 +1,6 @@
+local_env.py
+tis_udshl12_x64.dll
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
