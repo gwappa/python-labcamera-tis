@@ -109,6 +109,10 @@ cdef extern from "tisudshl.h" namespace "DShowLib" nogil:
         ## property-related
         smart_com[IVCDPropertyItems] getAvailableVCDProperties()
 
+##
+#   this is the "plan B" as the current Cython implementation does not allow
+#   operator overload for '->'
+#
 cdef extern from "property_utils.hpp" nogil:
     ctypedef smart_com[IVCDPropertyItems]     COMPropertyItemsPtr
     ctypedef smart_com[IVCDPropertyItem]      COMPropertyItemPtr
@@ -166,9 +170,6 @@ cpdef void initialize():
         if INITIALIZED == False:
             raise RuntimeError("failed to initialize DShowLib library")
 
-# cdef char *as_c_str(s: str):
-#     return s.encode('utf8')[0]
-
 def check_retval(bint ret, msg, warntype=TISDeviceWarning):
     if bool(ret) == False:
         _warnings.warn(msg, warntype)
@@ -176,6 +177,7 @@ def check_retval(bint ret, msg, warntype=TISDeviceWarning):
 
 DEFAULT_ENCODING     = 'utf-8'
 DEFAULT_VIDEO_FORMAT = 'Y16 (640x480)'
+PRINT_PROPERTY_INTERFACES = True
 
 cdef class Device:
     """the main interface to the ImagingSource camera."""
@@ -497,7 +499,8 @@ cdef class PropertyElementInterface:
     cdef _load(self, tIVCDPropertyInterfacePtr interface):
         self._base = interface
         spec = self._specify()
-        print(f"{self._prop.name}/{self._elem.name}: {spec}")
+        if PRINT_PROPERTY_INTERFACES == True:
+            print(f"{self._prop.name}/{self._elem.name}: {spec}")
         return self
 
     cdef _specify(self):
