@@ -2,6 +2,7 @@ from cython.operator cimport dereference as deref, preincrement as inc
 from libcpp cimport bool as cppbool
 from libcpp.vector cimport vector as stdvector
 from libcpp.string cimport string as stdstring
+from libc.stdint cimport uint8_t, int64_t
 
 cdef extern from "objbase.h" nogil:
     cdef enum COINIT:
@@ -30,6 +31,7 @@ cdef extern from "tisudshl.h" namespace "DShowLib:Grabber" nogil:
 
 cdef extern from "tisudshl.h" namespace "DShowLib" nogil:
     bint InitLibrary(COINIT coinit)
+    void ExitLibrary()
 
     cdef cppclass VideoFormatItem:
         stdstring toString()
@@ -40,6 +42,8 @@ cdef extern from "tisudshl.h" namespace "DShowLib" nogil:
         #   (only available for those that return a S/N)
         #
         stdstring getUniqueName()
+        stdstring getBaseName()
+        int64_t   getSerialNumber()
 
     cdef cppclass IVCDPropertyItems:
         pass
@@ -82,7 +86,8 @@ cdef extern from "tisudshl.h" namespace "DShowLib" nogil:
         #
         Grabber()
 
-        tVidCapDevListPtr getAvailableVideoCaptureDevices()
+        tVidCapDevListPtr      getAvailableVideoCaptureDevices()
+        VideoCaptureDeviceItem getDev()
 
         #
         # for the following procedures, the boolean return values are the status of success.
@@ -154,6 +159,8 @@ cdef extern from "property_utils.hpp" nogil:
     void setCurrentString(MapStringsInterfacePtr& options, const stdstring& newval)
 
 import warnings as _warnings
+import sys as _sys
+from collections import namedtuple as _namedtuple
 
 class TISDeviceWarning(UserWarning):
     pass
@@ -161,33 +168,53 @@ class TISDeviceWarning(UserWarning):
 class TISDeviceStatusWarning(TISDeviceWarning):
     pass
 
-cdef bint INITIALIZED = 0
-
-cpdef void initialize():
-    global INITIALIZED
-    if INITIALIZED == False:
-        INITIALIZED = InitLibrary(COINIT_MULTITHREADED)
-        if INITIALIZED == False:
-            raise RuntimeError("failed to initialize DShowLib library")
-
-def check_retval(bint ret, msg, warntype=TISDeviceWarning):
+def check_retval(bint ret, msg, type=TISDeviceWarning):
     if bool(ret) == False:
-        _warnings.warn(msg, warntype)
-    return bool(ret)
+        if isinstance(type, BaseException):
+            raise type(msg)
+        else:
+            _warnings.warn(msg, type)
+        return bool(ret)
+
+cdef class _LibraryBackend:
+    def __cinit__(self):
+        check_retval(InitLibrary(COINIT_MULTITHREADED),
+                     "Failed to init TIS_UDSHL DShowLib library",
+                     RuntimeError)
+        print(">>> loaded TIS_UDSHL", file=_sys.stderr, flush=True)
+
+    def __dealloc__(self):
+        ExitLibrary()
+        print(">>> unloaded TIS_UDSHL", file=_sys.stderr, flush=True)
+
+BACKEND = _LibraryBackend() # handles InitLibrary() and ExitLibrary() calls
 
 DEFAULT_ENCODING     = 'utf-8'
 DEFAULT_VIDEO_FORMAT = 'Y16 (640x480)'
 PRINT_PROPERTY_INTERFACES = True
 
+# the state of the device.
+#
+# IDLE --(prepare)--> READY --(start)--> RUNNING
+# └-------------------------(start)------┘
+#
+# RUNNING --(suspend)--> READY --(stop)--> IDLE
+# └----------------------------(stop)-----┘
+cdef enum DeviceState:
+    NODEV   = -1
+    IDLE    = 0
+    READY   = 1
+    RUNNING = 2
+
 cdef class Device:
     """the main interface to the ImagingSource camera."""
 
-    cdef Grabber *_grabber
-    cdef object  _props
+    cdef Grabber    *_grabber
+    cdef DeviceState _state
+    cdef object      _props
 
     @classmethod
     def list_names(cls):
-        initialize()
         cdef Grabber *grabber = new Grabber()
         ret = []
         cdef stdvector[VideoCaptureDeviceItem] devs  = deref(grabber.getAvailableVideoCaptureDevices())
@@ -204,14 +231,15 @@ cdef class Device:
         `name` must be one of the string values being obtained from the `list_names()` method.
         RuntimeError will be thrown in case of any errors.
         """
-        initialize()
         cdef bint ret
 
         # open
         self._grabber = new Grabber()
+        self._state   = NODEV
         ret = self._grabber.openDevByUniqueName(name.encode(DEFAULT_ENCODING))
         if bool(ret) == False:
             raise RuntimeError("failed to open device: " + name)
+        self._state   = IDLE
 
         # setup video formats
         fmts = self.list_video_formats()
@@ -223,6 +251,18 @@ cdef class Device:
 
     def __dealloc__(self):
         del self._grabber
+
+    @property
+    def model_name(self):
+        return (<bytes>(self._grabber.getDev().getBaseName().c_str())).decode(DEFAULT_ENCODING)
+
+    @property
+    def serial_number(self):
+        return hex(int(self._grabber.getDev().getSerialNumber()))
+
+    @property
+    def unique_name(self):
+        return (<bytes>(self._grabber.getDev().getUniqueName().c_str())).decode(DEFAULT_ENCODING)
 
     def _is_open(self):
         """returns whether the device is currently open.
@@ -241,7 +281,31 @@ cdef class Device:
         if self._is_open():
             check_retval(self._grabber.closeDev(),
                          "Grabber::closeDev() failed")
+            # anyway
+            self._state = NODEV
 
+    def list_video_formats(self):
+        ret = []
+        cdef stdvector[VideoFormatItem] formats  = deref(self._grabber.getAvailableVideoFormats())
+        for fmt in formats:
+            bname = <bytes> (fmt.toString().c_str())
+            ret.append(bname.decode())
+        return tuple(ret)
+
+    @property
+    def video_format(self):
+        bname = <bytes> self._grabber.getVideoFormat().toString().c_str()
+        return bname.decode()
+
+    @video_format.setter
+    def video_format(self, fmt: str):
+        check_retval(self._grabber.setVideoFormat(fmt.encode(DEFAULT_ENCODING)),
+                     "failed to update video format to: '" + fmt + "'",
+                     type=RuntimeError)
+
+    ##
+    #  trigger/rate/strobe settings
+    #
     @property
     def has_trigger(self):
         return bool(self._grabber.hasExternalTrigger())
@@ -267,27 +331,143 @@ cdef class Device:
         if self._grabber.setFPS(fps) == False:
             raise RuntimeError(f"failed to set frame rate to: {fps:.1f}")
 
-    def list_video_formats(self):
-        ret = []
-        cdef stdvector[VideoFormatItem] formats  = deref(self._grabber.getAvailableVideoFormats())
-        for fmt in formats:
-            bname = <bytes> (fmt.toString().c_str())
-            ret.append(bname.decode())
-        return tuple(ret)
+    @property
+    def has_strobe(self):
+        return ('Strobe' in self._props.keys()) \
+               and ('Enable' in self._props['Strobe'])
 
     @property
-    def video_format(self):
-        bname = <bytes> self._grabber.getVideoFormat().toString().c_str()
-        return bname.decode()
+    def strobe(self):
+        return (self._props['Strobe']['Enable'].value == True) \
+               and (self._props['Strobe']['Mode'].value == 'exposure')
 
-    @video_format.setter
-    def video_format(self, fmt: str):
-        if self._grabber.setVideoFormat(fmt.encode(DEFAULT_ENCODING)) == False:
-            raise RuntimeError("failed to update video format to: '" + fmt + "'")
+    @strobe.setter
+    def strobe(self, val):
+        val = bool(val)
+        self._props['Strobe']['Enable'].value = val
+        if val == True:
+           self._props['Strobe']['Mode'].value = 'exposure'
+
+    ##
+    #   exposure settings
+    #
+    @property
+    def has_exposure(self):
+        return ('Exposure' in self._props.keys())
+
+    @property
+    def has_auto_exposure(self):
+        return ('Exposure' in self._props.keys()) \
+                and ('Auto' in self._props['Exposure'].keys())
+
+    @property
+    def auto_exposure(self):
+        """current status of the auto-exposure mode in Boolean."""
+        return self._props['Exposure']['Auto'].value
+
+    @auto_exposure.setter
+    def auto_exposure(self, val):
+        self._props['Exposure']['Auto'].value = bool(val)
+
+    @property
+    def exposure_us(self):
+        """current exposure setting in microseconds, as an integer.
+
+        Note it returns some (possibly invalid) value even when
+        the auto-exposure mode is turned on.
+        """
+        exposure_sec = float(self._props["Exposure"]["Value"].value)
+        return int(round(exposure_sec * 1e6))
+
+    @exposure_us.setter
+    def exposure_us(self, val):
+        """sets the manual exposure in microseconds.
+
+        Note it does _not_ disable the auto-exposure mode even when it has been on.
+        """
+        val = int(round(val))
+        self._props["Exposure"]["Value"].value = float(val) / 1e6
+
+    @property
+    def exposure_range_us(self):
+        """range of possible exposures in microseconds, as a tuple of integers (min, max)."""
+        return tuple(int(round(float(v) * 1e6)) for v in self._props['Exposure']['Value'].range)
+
+    ##
+    #   gain settings
+    #
+    @property
+    def has_gain(self):
+        return ('Gain' in self._props.keys())
+
+    @property
+    def has_auto_gain(self):
+        return ('Gain' in self._props.keys()) \
+                and ('Auto' in self._props['Gain'])
+
+    @property
+    def auto_gain(self):
+        """returns the status of the auto-gain mode in Boolean."""
+        return self._props['Gain']['Auto'].value
+
+    @auto_gain.setter
+    def auto_gain(self, val):
+        self._props['Gain']['Auto'].value = bool(val)
+
+    @property
+    def gain(self):
+        """returns the current value of manual gain.
+
+        Note it returns some (possibly invalid) value even when
+        the auto-gain mode is turned on.
+        """
+        return self._props['Gain']['Value'].value
+
+    @gain.setter
+    def gain(self, val):
+        """sets the value of manual gain.
+
+        Note it does _not_ disable the auto-gain mode even when it has been on.
+        """
+        self._props['Gain']['Value'].value = float(val)
+
+    @property
+    def gain_range(self):
+        """range of possible values of gain, as a tuple of floats (min, max)."""
+        return self._props['Gain']['Value'].range
+
+    ##
+    #   gamma settings
+    #
+    @property
+    def has_gamma(self):
+        return ('Gamma' in self._props.keys())
+
+    @property
+    def has_auto_gamma(self):
+        return False # FIXME
+
+    @property
+    def gamma(self):
+        """returns the current value of manual gamma.
+
+        Note it returns some (maybe invalid) value even when the auto-gamma mode is turned on.
+        """
+        return self._props['Gamma']['Value'].value
+
+    @gamma.setter
+    def gamma(self, val):
+        """sets the value of manual gamma.
+
+        Note it does _not_ disable the auto-gamma mode even when it has been on.
+        """
+        self._props['Gamma']['Value'].value = float(val)
 
     @property
     def props(self):
         return self._props
+
+    ## TODO: implement prepare/live/sink/callback
 
 cdef class Properties:
     """the pythonic interface to 'VCDProperties' controls."""
