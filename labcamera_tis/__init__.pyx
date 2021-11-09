@@ -24,17 +24,16 @@ from cython.operator cimport dereference as deref, preincrement as inc
 from libcpp cimport bool as cppbool
 from libcpp.vector cimport vector as stdvector
 from libcpp.string cimport string as stdstring
-from libc.stdint cimport uint8_t, uint32_t, int64_t
+from libc.stdint cimport uint8_t, uint32_t, int64_t, uint64_t
 
 cdef extern from "windows.h" nogil:
     cdef struct SIZE:
         long cx, cy
 
-cdef extern from "objbase.h" nogil:
     cdef enum COINIT:
         pass
 
-cdef extern from "objbase.h" namespace "COINIT" nogil:
+cdef extern from "windows.h" namespace "COINIT" nogil:
     cdef COINIT COINIT_APARTMENTTHREADED
     cdef COINIT COINIT_MULTITHREADED
     cdef COINIT COINIT_DISABLE_OLE1DDE
