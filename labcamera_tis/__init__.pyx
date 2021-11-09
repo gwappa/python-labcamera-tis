@@ -24,7 +24,11 @@ from cython.operator cimport dereference as deref, preincrement as inc
 from libcpp cimport bool as cppbool
 from libcpp.vector cimport vector as stdvector
 from libcpp.string cimport string as stdstring
-from libc.stdint cimport uint8_t, int64_t
+from libc.stdint cimport uint8_t, uint32_t, int64_t
+
+cdef extern from "windows.h" nogil:
+    cdef struct SIZE:
+        long cx, cy
 
 cdef extern from "objbase.h" nogil:
     cdef enum COINIT:
@@ -55,8 +59,32 @@ cdef extern from "tisudshl.h" namespace "DShowLib" nogil:
     bint InitLibrary(COINIT coinit)
     void ExitLibrary()
 
+    ## values are copied from "udshl/simplectypes.h"
+    cdef enum tColorformatEnum:
+        eInvalidColorformat =  0 # DO NOT USE
+        eRGB32              =  1 # 32 bit BGRA
+        eRGB24              =  2 # 24 bit BGR
+        eRGB565             =  3 # 16 bit 5-6-5 BGR @deprecated in favor of eRGB32
+        eRGB555             =  4 # 16 bit 5-5-5 BGR @deprecated in favor of eRGB32
+        eRGB8               =  5 # 8 bit grayscale (i.e. Y8)
+        eY8                 =  5 # alias for 'eRGB8'
+        eUYVY               =  6 # 16 bit YUV top-down
+        eY800               =  7 # 8 bit grayscale top-down
+        eYGB1               =  8 # 10/16 bit grayscale top-down, bits ordered per pixel [76543210______98]
+        eYGB0               =  9 # 10/16 bit grayscale top-down, bits ordered per pixel [10______98765432]
+        eBY8                = 10 # Bayer Y800
+        eY16                = 11 # 16 bit grayscale top-down, each pixel being represented by an unsigned 16 bit integer
+        eRGB64              = 12 # 16 bit * (B, G, R, A)
+
+    cdef cppclass FrameTypeInfo:
+        SIZE             dim
+        size_t           buffersize
+        uint32_t         getBitsPerPixel()
+        tColorformatEnum getColorformat()
+
     cdef cppclass VideoFormatItem:
-        stdstring toString()
+        stdstring     toString()
+        FrameTypeInfo getFrameType()
 
     cdef cppclass VideoCaptureDeviceItem:
         ##
@@ -183,6 +211,7 @@ cdef extern from "property_utils.hpp" nogil:
 import warnings as _warnings
 import sys as _sys
 from collections import namedtuple as _namedtuple
+import numpy as _np
 
 class TISDeviceWarning(UserWarning):
     pass
@@ -214,6 +243,110 @@ BACKEND = _LibraryBackend() # handles InitLibrary() and ExitLibrary() calls
 DEFAULT_ENCODING     = 'utf-8'
 DEFAULT_VIDEO_FORMAT = 'Y16 (640x480)'
 PRINT_PROPERTY_INTERFACES = True
+
+cdef class ColorFormat:
+    """the interface for tColorformatEnum"""
+    cdef tColorformatEnum _fmt
+
+    def __cinit__(self):
+        self._fmt = eInvalidColorformat
+
+    def __dealloc__(self):
+        pass
+
+    cdef _load(self, tColorformatEnum fmt):
+        self._fmt = fmt
+
+    def __str__(self):
+        return f"ColorFormat({int(self._fmt)})"
+
+    @property
+    def ffmpeg_style(self):
+        if self._fmt == eRGB24:
+            return "rgb24"
+        elif self._fmt == eRGB32:
+            return "rgba"
+        elif self._fmt == eY800:
+            return "gray"
+        elif self._fmt == eY16:
+            return "gray16le" # FIXME: assumes the little-endian environment
+        else:
+            raise NotImplementedError(f"color format unimplemented for ffmpeg: {self}")
+
+    @property
+    def dtype(self):
+        if self._fmt == eRGB24:
+            return _np.uint8
+        elif self._fmt == eRGB32:
+            return _np.uint8
+        elif self._fmt == eY800:
+            return _np.uint8
+        elif self._fmt == eY16:
+            return _np.uint16 # FIXME: assumes the little-endian environment
+        else:
+            raise NotImplementedError(f"color format unimplemented for dtype: {self}")
+
+    @property
+    def per_pixel(self):
+        if self._fmt == eRGB24:
+            return 3
+        elif self._fmt == eRGB32:
+            return 4
+        elif self._fmt == eY800:
+            return 1
+        elif self._fmt == eY16:
+            return 1
+        else:
+            raise NotImplementedError(f"color format unimplemented for per-pixel # of values: {self}")
+
+cdef class FrameTypeDescriptor:
+    cdef FrameTypeInfo _type
+    cdef object        _colorfmt
+
+    def __cinit__(self):
+        self._colorfmt = ColorFormat()
+
+    def __dealloc__(self):
+        pass
+
+    cdef _load(self, FrameTypeInfo type):
+        self._type = type
+        self._colorfmt._load(self._type.getColorformat())
+
+    @property
+    def color_format(self):
+        return self._colorfmt
+
+    @property
+    def buffer_size(self):
+        """the size of the image buffer to be required, in bytes."""
+        return self._type.buffersize
+
+    @property
+    def width(self):
+        return self._type.dim.cx
+
+    @property
+    def height(self):
+        return self._type.dim.cy
+
+    @property
+    def per_pixel(self):
+        return self._colorfmt.per_pixel
+
+    @property
+    def shape(self):
+        """the shape of a single frame when it is converted into a NumPy array."""
+        return (self.height, self.width, self.per_pixel)
+
+    @property
+    def dtype(self):
+        """the data type of the frame when it is converted into a NumPy array."""
+        return self._colorfmt.dtype
+
+    @property
+    def numpy_formatter(self):
+        return dict(dtype=self.dtype, shape=self.shape)
 
 # the state of the device.
 #
