@@ -55,9 +55,9 @@ except ImportError:
 
 extensions = [
     Extension(
-        "camera_tis", ["camera_tis/*.pyx", "camera_tis/property_utils.cpp"],
+        "labcamera_tis", ["labcamera_tis/*.pyx", "labcamera_tis/property_utils.cpp"],
         language="c++",
-        include_dirs=["lib/include", "camera_tis"], # to be filled the user
+        include_dirs=["lib/include", "labcamera_tis"], # to be filled the user
         library_dirs=["lib/link",], # to be filled by the user
         libraries=["tis_udshl12_x64",],
         define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")]
@@ -65,10 +65,10 @@ extensions = [
 ]
 
 setup(
-    name='ks-camera-tis',
+    name='ks-labcamera-tis',
     version="0.1.0",
     description='a Cython wrapper library for the ImagingSource camera control.',
-    url='https://github.com/gwappa/python-camera-tis',
+    url='https://github.com/gwappa/python-labcamera-tis',
     author='Keisuke Sehara',
     author_email='keisuke.sehara@gmail.com',
     license='MIT',
