@@ -33,6 +33,8 @@ cdef extern from "windows.h" nogil:
     cdef enum COINIT:
         pass
 
+    ctypedef unsigned char BYTE
+
 cdef extern from "windows.h" namespace "COINIT" nogil:
     cdef COINIT COINIT_APARTMENTTHREADED
     cdef COINIT COINIT_MULTITHREADED
@@ -49,6 +51,8 @@ cdef extern from "tisudshl.h" nogil:
         smart_com[T] operator=(T* p)
 
 cdef extern from "tisudshl.h" namespace "DShowLib:Grabber" nogil:
+    ctypedef smart_ptr[FrameQueueBuffer]       tFrameQueueBufferPtr
+    ctypedef stdvector[tFrameQueueBufferPtr]   tFrameQueueBufferList
     ctypedef stdvector[VideoCaptureDeviceItem] tVidCapDevList
     ctypedef smart_ptr[tVidCapDevList]         tVidCapDevListPtr
     ctypedef stdvector[VideoFormatItem]        tVidFmtList
@@ -57,6 +61,11 @@ cdef extern from "tisudshl.h" namespace "DShowLib:Grabber" nogil:
 cdef extern from "tisudshl.h" namespace "DShowLib" nogil:
     bint InitLibrary(COINIT coinit)
     void ExitLibrary()
+
+    cdef cppclass Error:
+        cppbool   isError()
+        cppbool   isSuccess()
+        stdstring toString()
 
     ## values are copied from "udshl/simplectypes.h"
     cdef enum tColorformatEnum:
@@ -83,6 +92,7 @@ cdef extern from "tisudshl.h" namespace "DShowLib" nogil:
 
     cdef cppclass VideoFormatItem:
         stdstring     toString()
+        stdstring     getColorformatString()
         FrameTypeInfo getFrameType()
 
     cdef cppclass VideoCaptureDeviceItem:
@@ -119,8 +129,54 @@ cdef extern from "tisudshl.h" namespace "DShowLib" nogil:
         pass
 
     cdef cppclass IVCDSwitchProperty:
-        bint getSwitch()
-        void setSwitch(bint val)
+        cppbool getSwitch()
+        void    setSwitch(cppbool val)
+
+    ##
+    #   used in zero-copy notification
+    #
+    cdef cppclass IFrame:
+        BYTE *getPtr()
+
+    ##
+    #   used in frame queues
+    #
+    cdef cppclass FrameQueueBuffer:
+        void *getUserPointer()
+
+    cdef cppclass GrabberSinkType:
+        pass
+
+    cdef cppclass FrameNotificationSinkListener:
+        pass
+
+    ##
+    #   zero-copy notification sink
+    #
+    cdef cppclass FrameNotificationSink(GrabberSinkType):
+        @staticmethod
+        smart_ptr[FrameNotificationSink] create(FrameNotificationSinkListener& listener,
+                                                const FrameTypeInfo& type)
+
+    cdef cppclass FrameQueueSinkListener:
+        pass
+
+    ##
+    #   queued frame buffer sink
+    #
+    cdef cppclass FrameQueueSink(GrabberSinkType):
+        @staticmethod
+        smart_ptr[FrameQueueSink] create(FrameQueueSinkListener& listener,
+                                         const FrameTypeInfo& type)
+        ##
+        #   can only be called after the sink is successfully connected
+        #   to a grabber during `prepare`
+        #
+        Error   allocAndQueueBuffers(size_t count)
+        cppbool isCancelRequested()
+
+        tFrameQueueBufferPtr popOutputQueueBuffer()
+        Error                queueBuffer(tFrameQueueBufferPtr& buffer)
 
     ctypedef smart_com[IVCDPropertyItem]          tIVCDPropertyItemPtr
     ctypedef stdvector[tIVCDPropertyItemPtr]      tVCDPropertyItemArray
@@ -135,33 +191,62 @@ cdef extern from "tisudshl.h" namespace "DShowLib" nogil:
         #
         Grabber()
 
+        Error                  getLastError()
+
         tVidCapDevListPtr      getAvailableVideoCaptureDevices()
         VideoCaptureDeviceItem getDev()
 
         #
         # for the following procedures, the boolean return values are the status of success.
         #
-        bint              openDevByUniqueName(const stdstring& dev)
-        bint              isDevOpen()
-        bint              isDevValid()
-        bint              closeDev()
+        cppbool openDevByUniqueName(const stdstring& dev)
+        cppbool isDevOpen()
+        cppbool isDevValid()
+        cppbool closeDev()
 
         ## frame rate-related
-        double getFPS()
-        bint   setFPS(double fps)
+        double  getFPS()
+        cppbool setFPS(double fps)
 
         ## trigger-related
-        bint hasExternalTrigger()
-        bint getExternalTrigger()
-        bint setExternalTrigger(bint value)
+        cppbool hasExternalTrigger()
+        cppbool getExternalTrigger()
+        cppbool setExternalTrigger(cppbool value)
 
         ## format-related
         tVidFmtListPtr  getAvailableVideoFormats()
         VideoFormatItem getVideoFormat()
-        bint            setVideoFormat(const stdstring& fmt)
+        cppbool         setVideoFormat(const stdstring& fmt)
 
         ## property-related
         smart_com[IVCDPropertyItems] getAvailableVCDProperties()
+
+        ## capture-related
+
+        ##
+        #   must be called _before_ `prepareLive` (i.e. during IDLE)
+        #
+        cppbool setSinkType(smart_ptr[GrabberSinkType] newsink)
+
+        ##
+        #   IDLE-->READY
+        #
+        cppbool prepareLive(cppbool render)
+
+        ##
+        #   IDLE/READY-->RUNNING
+        #
+        cppbool startLive(cppbool show)
+
+        ##
+        #   RUNNING-->READY
+        #
+        cppbool suspendLive()
+
+        ##
+        #   READY/RUNNING-->IDLE
+        #
+        cppbool stopLive()
 
 ##
 #   this is the "plan B" as the current Cython implementation does not allow
@@ -208,6 +293,7 @@ cdef extern from "property_utils.hpp" nogil:
     void setCurrentString(MapStringsInterfacePtr& options, const stdstring& newval)
 
 import warnings as _warnings
+import logging as _logging
 import sys as _sys
 from collections import namedtuple as _namedtuple
 import numpy as _np
@@ -231,17 +317,26 @@ cdef class _LibraryBackend:
         check_retval(InitLibrary(COINIT_MULTITHREADED),
                      "Failed to init TIS_UDSHL DShowLib library",
                      RuntimeError)
-        print(">>> loaded TIS_UDSHL", file=_sys.stderr, flush=True)
+        LOGGER.info("loaded TIS_UDSHL")
 
     def __dealloc__(self):
         ExitLibrary()
-        print(">>> unloaded TIS_UDSHL", file=_sys.stderr, flush=True)
+        LOGGER.info("unloaded TIS_UDSHL")
+
+_logging.basicConfig(level=_logging.INFO,
+                     format="[%(asctime)s %(name)s] %(levelname)s: %(message)s")
+LOGGER = _logging.getLogger("ks-labcamera-tis")
+LOGGER.setLevel(_logging.INFO)
 
 BACKEND = _LibraryBackend() # handles InitLibrary() and ExitLibrary() calls
 
 DEFAULT_ENCODING     = 'utf-8'
 DEFAULT_VIDEO_FORMAT = 'Y16 (640x480)'
-PRINT_PROPERTY_INTERFACES = True
+DEBUG_FORMATS        = True
+DEBUG_PROPERTIES     = True
+
+cdef str as_python_str(stdstring src):
+    return (<bytes>(src.c_str())).decode(DEFAULT_ENCODING)
 
 cdef class ColorFormat:
     """the interface for tColorformatEnum"""
@@ -373,8 +468,7 @@ cdef class Device:
         ret = []
         cdef stdvector[VideoCaptureDeviceItem] devs  = deref(grabber.getAvailableVideoCaptureDevices())
         for dev in devs:
-            bname = <bytes> (dev.getUniqueName().c_str())
-            ret.append(bname.decode())
+            ret.append(as_python_str(dev.getUniqueName()))
         del grabber
         return tuple(ret)
 
@@ -408,7 +502,7 @@ cdef class Device:
 
     @property
     def model_name(self):
-        return (<bytes>(self._grabber.getDev().getBaseName().c_str())).decode(DEFAULT_ENCODING)
+        return as_python_str(self._grabber.getDev().getBaseName())
 
     @property
     def serial_number(self):
@@ -416,7 +510,7 @@ cdef class Device:
 
     @property
     def unique_name(self):
-        return (<bytes>(self._grabber.getDev().getUniqueName().c_str())).decode(DEFAULT_ENCODING)
+        return as_python_str(self._grabber.getDev().getUniqueName())
 
     def _is_open(self):
         """returns whether the device is currently open.
@@ -442,20 +536,23 @@ cdef class Device:
         ret = []
         cdef stdvector[VideoFormatItem] formats  = deref(self._grabber.getAvailableVideoFormats())
         for fmt in formats:
-            bname = <bytes> (fmt.toString().c_str())
-            ret.append(bname.decode())
+            ret.append(as_python_str(fmt.toString()))
         return tuple(ret)
 
     @property
     def video_format(self):
-        bname = <bytes> self._grabber.getVideoFormat().toString().c_str()
-        return bname.decode()
+        return as_python_str(self._grabber.getVideoFormat().toString())
 
     @video_format.setter
     def video_format(self, fmt: str):
         check_retval(self._grabber.setVideoFormat(fmt.encode(DEFAULT_ENCODING)),
                      "failed to update video format to: '" + fmt + "'",
                      type=RuntimeError)
+        if DEBUG_FORMATS:
+            colorfmt   = as_python_str(self._grabber.getVideoFormat().getColorformatString())
+            fmtindex   = int(self._grabber.getVideoFormat().getFrameType().getColorformat())
+            buffersize = int(self._grabber.getVideoFormat().getFrameType().buffersize)
+            LOGGER.info(f"video format--> {self.video_format}, color: {colorfmt} (fmtindex), buffersize={buffersize}")
 
     ##
     #  trigger/rate/strobe settings
@@ -472,6 +569,10 @@ cdef class Device:
     def triggered(self, bint val):
         check_retval(self._grabber.setExternalTrigger(val),
                      "Grabber::setExternalTrigger() failed")
+
+    def software_trigger(self):
+        """generates a software trigger and sends it to the device."""
+        self._props['Trigger']['Software Trigger'].run()
 
     @property
     def frame_rate(self):
@@ -833,8 +934,11 @@ cdef class PropertyElementInterface:
     cdef _load(self, tIVCDPropertyInterfacePtr interface):
         self._base = interface
         spec = self._specify()
-        if PRINT_PROPERTY_INTERFACES == True:
-            print(f"{self._prop.name}/{self._elem.name}: {spec}")
+        if DEBUG_PROPERTIES == True:
+            log = LOGGER.info
+        else:
+            log = LOGGER.debug
+        log(f"{self._prop.name}/{self._elem.name}: {spec}")
         return self
 
     cdef _specify(self):
@@ -900,11 +1004,11 @@ cdef class PropertyElementInterface:
     def get_string_options_unsafe(self):
         ret = []
         for option in getStringOptions(self._options):
-            ret.append((<bytes>(option.c_str())).decode(DEFAULT_ENCODING))
+            ret.append(as_python_str(option))
         return tuple(ret)
 
     def get_current_string_unsafe(self):
-        return getCurrentString(self._options).decode(DEFAULT_ENCODING)
+        return as_python_str(getCurrentString(self._options))
 
     def set_current_string_unsafe(self, newval):
         setCurrentString(self._options, newval.encode(DEFAULT_ENCODING))
