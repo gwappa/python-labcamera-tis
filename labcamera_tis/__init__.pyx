@@ -292,6 +292,21 @@ cdef extern from "property_utils.hpp" nogil:
     stdvector[stdstring] getStringOptions(MapStringsInterfacePtr& options)
     void setCurrentString(MapStringsInterfacePtr& options, const stdstring& newval)
 
+##
+#   a set of wrappers for not having to implement C++ listeners in Cython
+#
+cdef extern from "listeners.hpp":
+    ##
+    #   size == 0 if acquisition has ended
+    #
+    ctypedef void (*FrameCallback)(size_t size, void *data, void *user_data)
+
+    cdef cppclass DefaultFrameNotificationSinkListener(FrameNotificationSinkListener):
+        DefaultFrameNotificationSinkListener(FrameCallback callback, void *user_data)
+
+    cdef cppclass DefaultFrameQueueSinkListener:
+        pass
+
 import warnings as _warnings
 import logging as _logging
 import sys as _sys
@@ -442,7 +457,7 @@ cdef class FrameTypeDescriptor:
     def numpy_formatter(self):
         return dict(dtype=self.dtype, shape=self.shape)
 
-# the state of the device.
+# the states of the device.
 #
 # IDLE --(prepare)--> READY --(start)--> RUNNING
 # └-------------------------(start)------┘
@@ -456,11 +471,15 @@ cdef enum DeviceState:
     RUNNING = 2
 
 cdef class Device:
-    """the main interface to the ImagingSource camera."""
+    """the main interface to ImagingSource cameras."""
 
     cdef Grabber    *_grabber
     cdef DeviceState _state
     cdef object      _props
+    cdef object      _callbacks
+
+    cdef FrameNotificationSink         *_notification_sink
+    cdef FrameNotificationSinkListener *_notification_listener
 
     @classmethod
     def list_names(cls):
@@ -496,6 +515,8 @@ cdef class Device:
 
         # set up properties
         self._props = Properties(self)
+
+        self._callbacks = []
 
     def __dealloc__(self):
         del self._grabber
@@ -552,7 +573,7 @@ cdef class Device:
             colorfmt   = as_python_str(self._grabber.getVideoFormat().getColorformatString())
             fmtindex   = int(self._grabber.getVideoFormat().getFrameType().getColorformat())
             buffersize = int(self._grabber.getVideoFormat().getFrameType().buffersize)
-            LOGGER.info(f"video format--> {self.video_format}, color: {colorfmt} (fmtindex), buffersize={buffersize}")
+            LOGGER.info(f"video format--> {self.video_format}, color: {colorfmt} ({fmtindex}), buffersize={buffersize}")
 
     ##
     #  trigger/rate/strobe settings
@@ -722,7 +743,49 @@ cdef class Device:
     def props(self):
         return self._props
 
-    ## TODO: implement prepare/live/sink/callback
+    #
+    #   capture modes
+    #
+    @property
+    def callbacks(self):
+        return self._callbacks
+
+    def prepare(self, buffers=0):
+        """sets up acquisition for the 'live' mode."""
+        if self._state >= READY:
+            _warnings.warn("prepare() is called when the device has been already set up.",
+                           category=TISDeviceStatusWarning)
+            return
+        # prepare sink
+        # call prepareLive
+        # update status to READY + frame descriptor
+
+    def start(self, update_descriptor=True):
+        """starts the 'live' mode, beginning to acquire images."""
+        if self._state == RUNNING:
+            _warnings.warn("the device is already in live.",
+                           category=TISDeviceStatusWarning)
+            return
+        # call startLive
+        # update status to RUNNING + frame descriptor (if needed)
+
+    def suspend(self):
+        if self._state != RUNNING:
+            _warnings.warn("suspend() is called when the device is not in live.",
+                           category=TISDeviceStatusWarning)
+            return
+        # call suspendLive
+        # update status to READY (no frame desc update)
+
+    def stop(self):
+        """stops acquisition, rendering the device back to the idle state."""
+        if self._state < READY:
+            _warnings.warn("stop() is called when the device has not been set up.",
+                           category=TISDeviceStatusWarning)
+            return
+        # call stopLive
+        # update status to IDLE (+ frame desc)
+        # get rid of the sink
 
 cdef class Properties:
     """the pythonic interface to 'VCDProperties' controls."""

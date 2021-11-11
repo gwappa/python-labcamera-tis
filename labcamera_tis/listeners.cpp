@@ -23,18 +23,30 @@
 */
 #include "listeners.hpp"
 
-DefaultFrameNotificationSinkListener::DefaultFrameNotificationSinkListener(NotificationCallback callback):
-    callback(callback) { }
+DefaultFrameNotificationSinkListener::DefaultFrameNotificationSinkListener(FrameCallback callback, void *user_data):
+    callback(callback), user_data(user_data) { }
 
 void DefaultFrameNotificationSinkListener::frameReceived(DShowLib::IFrame &frame)
 {
-    callback(frame);
+    callback(frame.getActualDataSize(),
+             frame.getPtr(),
+             user_data);
 }
 
-DefaultFrameQueueSinkListener::DefaultFrameQueueSinkListener(FrameQueueCallback callback):
-    callback(callback) { }
+DefaultFrameQueueSinkListener::DefaultFrameQueueSinkListener(FrameCallback callback, void *user_data):
+    callback(callback), user_data(user_data) { }
+
+void DefaultFrameQueueSinkListener::sinkConnected(DShowLib::FrameQueueSink& sink, const DShowLib::FrameTypeInfo& info)
+{
+    // TODO
+}
 
 void DefaultFrameQueueSinkListener::framesQueued(const DShowLib::FrameQueueSink& sink)
+{
+    // TODO
+}
+
+void DefaultFrameQueueSinkListener::sinkDisconnected(DShowLib::FrameQueueSink& sink)
 {
     // TODO
 }

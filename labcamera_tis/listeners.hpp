@@ -24,15 +24,15 @@
 #ifndef LISTENERS_HPP_
 #include <tisudshl.h>
 
-typedef void (*NotificationCallback)(DShowLib::IFrame&);
-typedef void (*FrameQueueCallback)(const DShowLib::FrameQueueSink&);
+typedef void (*FrameCallback)(size_t size, void *data, void *user_data);
 
 class DefaultFrameNotificationSinkListener: public DShowLib::FrameNotificationSinkListener
 {
 private:
-    const NotificationCallback callback;
+    const FrameCallback callback;
+          void         *user_data;
 public:
-    DefaultFrameNotificationSinkListener(NotificationCallback callback);
+    DefaultFrameNotificationSinkListener(FrameCallback callback, void *user_data);
     void sinkConnected(const DShowLib::FrameTypeInfo& info) override { };
     void sinkDisconnected() override { };
     void frameReceived(DShowLib::IFrame& frame) override;
@@ -41,14 +41,15 @@ public:
 class DefaultFrameQueueSinkListener: public DShowLib::FrameQueueSinkListener
 {
 private:
-    const FrameQueueCallback callback;
+    const FrameCallback callback;
+          void         *user_data;
 
 public:
-    DefaultFrameQueueSinkListener(FrameQueueCallback callback);
+    DefaultFrameQueueSinkListener(FrameCallback callback, void *user_data);
 
     void framesQueued(const DShowLib::FrameQueueSink& sink); // override;
-    void sinkConnected(DShowLib::FrameQueueSink& sink, const DShowLib::FrameTypeInfo& info) override { };
-    void sinkDisconnected(DShowLib::FrameQueueSink& sink) override { };
+    void sinkConnected(DShowLib::FrameQueueSink& sink, const DShowLib::FrameTypeInfo& info) override;
+    void sinkDisconnected(DShowLib::FrameQueueSink& sink) override;
 };
 
 #define LISTENERS_HPP_
