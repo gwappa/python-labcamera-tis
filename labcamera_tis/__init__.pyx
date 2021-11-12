@@ -347,7 +347,6 @@ cdef class _LibraryBackend:
         except:
             from traceback import print_exc
             print_exc()
-        LOGGER.info("unloaded TIS_UDSHL")
 
 _logging.basicConfig(level=_logging.INFO,
                      format="[%(asctime)s %(name)s] %(levelname)s: %(message)s")
@@ -358,8 +357,8 @@ BACKEND = _LibraryBackend() # handles InitLibrary() and ExitLibrary() calls
 
 DEFAULT_ENCODING     = 'utf-8'
 DEFAULT_VIDEO_FORMAT = 'Y16 (640x480)'
-DEBUG_FORMATS        = True
-DEBUG_PROPERTIES     = True
+DEBUG_FORMATS        = False
+DEBUG_PROPERTIES     = False
 
 cdef str as_python_str(stdstring src):
     return (<bytes>(src.c_str())).decode(DEFAULT_ENCODING)
@@ -479,16 +478,20 @@ cdef class FrameTypeDescriptor:
         return self._type.buffersize
 
     @property
+    def ndim(self):
+        return self.formatter.ndims
+
+    @property
     def width(self):
-        return self._type.dim.cx
+        return self.formatter.shape[1]
 
     @property
     def height(self):
-        return self._type.dim.cy
+        return self.formatter.shape[0]
 
     @property
     def per_pixel(self):
-        return self._colorfmt.per_pixel
+        return self.formatter.shape[2]
 
     @property
     def shape(self):
@@ -502,7 +505,7 @@ cdef class FrameTypeDescriptor:
 
     @property
     def numpy_formatter(self):
-        return dict(dtype=self.dtype, shape=self.shape)
+        return dict(dtype=self.dtype, shape=self.shape[:self.ndim])
 
 # the states of the device.
 #
@@ -800,6 +803,11 @@ cdef class Device:
         self._props['Gamma']['Value'].value = float(val)
 
     @property
+    def gamma_range(self):
+        """range of possible values of gamma, as a tuple of floats (min, max)."""
+        return self._props['Gamma']['Value'].range
+
+    @property
     def props(self):
         return self._props
 
@@ -810,9 +818,9 @@ cdef class Device:
     def callbacks(self):
         return self._callbacks
 
-    def prepare(self, buffers=0):
+    def prepare(self, buffer_size=0):
         """sets up acquisition for the 'live' mode."""
-        cdef size_t n_buffers = buffers
+        cdef size_t n_buffers = buffer_size
 
         if self._state >= READY:
             _warnings.warn("prepare() is called when the device has been already set up.",
@@ -822,11 +830,11 @@ cdef class Device:
         self._desc._load(self._grabber.getVideoFormat().getFrameType())
 
         # prepare sink
-        if buffers == 0:
+        if buffer_size == 0:
             self._frame_sink = as_sink(FrameNotificationSink.create(deref(self._notification_listener),
                                                                        self._desc._type))
         else:
-            self._queue_listener.buffer_count(buffers)
+            self._queue_listener.buffer_count(n_buffers)
             self._frame_sink = as_sink(FrameQueueSink.create(deref(self._queue_listener),
                                                                    self._desc._type))
         if check_retval(self._grabber.setSinkType(self._frame_sink),
@@ -842,12 +850,14 @@ cdef class Device:
 
         self._state = READY
 
-    def start(self, update_descriptor=True):
+    def start(self, buffer_size=0):
         """starts the 'live' mode, beginning to acquire images."""
         if self._state == RUNNING:
             _warnings.warn("the device is already in live.",
                            category=TISDeviceStatusWarning)
             return
+        elif self._state < READY:
+            self.prepare(buffer_size)
 
         if check_retval(self._grabber.startLive(False),
                         "startLive() failed") == False:
@@ -876,6 +886,7 @@ cdef class Device:
                            category=TISDeviceStatusWarning)
             return
 
+        LOGGER.info("calling stopLive()")
         if check_retval(self._grabber.stopLive(),
                         "stopLive() failed") == False:
             LOGGER.warn(as_python_str(self._grabber.getLastError().toString()))
@@ -885,6 +896,13 @@ cdef class Device:
         # TODO: get rid of the sink
         # since I am not really sure about what to do
         # to remove the sink, I leave it as it is
+
+    def is_setup(self):
+        return (self._state >= READY)
+
+    @property
+    def frame_descriptor(self):
+        return self._desc
 
     cdef as_frame(self, size_t size, void *data):
         cdef NumpyFormatter fmt = self._desc.formatter
