@@ -21,36 +21,32 @@
  *  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  *  SOFTWARE.
 */
-#ifndef LISTENERS_HPP_
-#include <tisudshl.h>
+#include "sink_utils.hpp"
 
-typedef void (*FrameCallback)(size_t size, void *data, void *user_data);
+DefaultFrameNotificationSinkListener::DefaultFrameNotificationSinkListener(FrameCallback callback, void *user_data):
+    callback(callback), user_data(user_data) { }
 
-class DefaultFrameNotificationSinkListener: public DShowLib::FrameNotificationSinkListener
+void DefaultFrameNotificationSinkListener::frameReceived(DShowLib::IFrame &frame)
 {
-private:
-    const FrameCallback callback;
-          void         *user_data;
-public:
-    DefaultFrameNotificationSinkListener(FrameCallback callback, void *user_data);
-    void sinkConnected(const DShowLib::FrameTypeInfo& info) override { };
-    void sinkDisconnected() override { };
-    void frameReceived(DShowLib::IFrame& frame) override;
-};
+    callback(frame.getActualDataSize(),
+             frame.getPtr(),
+             user_data);
+}
 
-class DefaultFrameQueueSinkListener: public DShowLib::FrameQueueSinkListener
+DefaultFrameQueueSinkListener::DefaultFrameQueueSinkListener(FrameCallback callback, void *user_data):
+    callback(callback), user_data(user_data) { }
+
+void DefaultFrameQueueSinkListener::sinkConnected(DShowLib::FrameQueueSink& sink, const DShowLib::FrameTypeInfo& info)
 {
-private:
-    const FrameCallback callback;
-          void         *user_data;
+    // TODO
+}
 
-public:
-    DefaultFrameQueueSinkListener(FrameCallback callback, void *user_data);
+void DefaultFrameQueueSinkListener::framesQueued(const DShowLib::FrameQueueSink& sink)
+{
+    // TODO
+}
 
-    void framesQueued(const DShowLib::FrameQueueSink& sink); // override;
-    void sinkConnected(DShowLib::FrameQueueSink& sink, const DShowLib::FrameTypeInfo& info) override;
-    void sinkDisconnected(DShowLib::FrameQueueSink& sink) override;
-};
-
-#define LISTENERS_HPP_
-#endif
+void DefaultFrameQueueSinkListener::sinkDisconnected(DShowLib::FrameQueueSink& sink)
+{
+    // TODO
+}

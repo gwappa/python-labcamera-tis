@@ -295,7 +295,7 @@ cdef extern from "property_utils.hpp" nogil:
 ##
 #   a set of wrappers for not having to implement C++ listeners in Cython
 #
-cdef extern from "listeners.hpp":
+cdef extern from "sink_utils.hpp":
     ##
     #   size == 0 if acquisition has ended
     #
@@ -306,6 +306,9 @@ cdef extern from "listeners.hpp":
 
     cdef cppclass DefaultFrameQueueSinkListener:
         pass
+
+    smart_ptr[GrabberSinkType] as_sink(smart_ptr[FrameNotificationSink]& src)
+    smart_ptr[GrabberSinkType] as_sink(smart_ptr[FrameQueueSink]& src)
 
 import warnings as _warnings
 import logging as _logging
@@ -335,7 +338,11 @@ cdef class _LibraryBackend:
         LOGGER.info("loaded TIS_UDSHL")
 
     def __dealloc__(self):
-        ExitLibrary()
+        try:
+            ExitLibrary()
+        except:
+            from traceback import print_exc
+            print_exc()
         LOGGER.info("unloaded TIS_UDSHL")
 
 _logging.basicConfig(level=_logging.INFO,
@@ -353,57 +360,62 @@ DEBUG_PROPERTIES     = True
 cdef str as_python_str(stdstring src):
     return (<bytes>(src.c_str())).decode(DEFAULT_ENCODING)
 
-cdef class ColorFormat:
+cdef class ColorFormatDescriptor:
     """the interface for tColorformatEnum"""
-    cdef tColorformatEnum _fmt
+    cdef tColorformatEnum _value
 
     def __cinit__(self):
-        self._fmt = eInvalidColorformat
+        self._value = eInvalidColorformat
 
     def __dealloc__(self):
         pass
 
-    cdef _load(self, tColorformatEnum fmt):
-        self._fmt = fmt
-
     def __str__(self):
-        return f"ColorFormat({int(self._fmt)})"
+        return f"ColorFormat({self.value})"
+
+    @property
+    def value(self):
+        return int(self._value)
+
+    @value.setter
+    def value(self, tColorformatEnum value):
+        self._value = value
 
     @property
     def ffmpeg_style(self):
-        if self._fmt == eRGB24:
+        if self._value == eRGB24:
             return "rgb24"
-        elif self._fmt == eRGB32:
+        elif self._value == eRGB32:
             return "rgba"
-        elif self._fmt == eY800:
+        elif self._value == eY800:
             return "gray"
-        elif self._fmt == eY16:
+        elif self._value == eY16:
             return "gray16le" # FIXME: assumes the little-endian environment
         else:
             raise NotImplementedError(f"color format unimplemented for ffmpeg: {self}")
 
     @property
     def dtype(self):
-        if self._fmt == eRGB24:
+        if self._value == eRGB24:
             return _np.uint8
-        elif self._fmt == eRGB32:
+        elif self._value == eRGB32:
             return _np.uint8
-        elif self._fmt == eY800:
+        elif self._value == eY800:
             return _np.uint8
-        elif self._fmt == eY16:
+        elif self._value == eY16:
             return _np.uint16 # FIXME: assumes the little-endian environment
         else:
             raise NotImplementedError(f"color format unimplemented for dtype: {self}")
 
     @property
     def per_pixel(self):
-        if self._fmt == eRGB24:
+        if self._value == eRGB24:
             return 3
-        elif self._fmt == eRGB32:
+        elif self._value == eRGB32:
             return 4
-        elif self._fmt == eY800:
+        elif self._value == eY800:
             return 1
-        elif self._fmt == eY16:
+        elif self._value == eY16:
             return 1
         else:
             raise NotImplementedError(f"color format unimplemented for per-pixel # of values: {self}")
@@ -413,14 +425,14 @@ cdef class FrameTypeDescriptor:
     cdef object        _colorfmt
 
     def __cinit__(self):
-        self._colorfmt = ColorFormat()
+        self._colorfmt = ColorFormatDescriptor()
 
     def __dealloc__(self):
         pass
 
     cdef _load(self, FrameTypeInfo type):
         self._type = type
-        self._colorfmt._load(self._type.getColorformat())
+        self._colorfmt.value = self._type.getColorformat()
 
     @property
     def color_format(self):
@@ -470,15 +482,22 @@ cdef enum DeviceState:
     READY   = 1
     RUNNING = 2
 
+cdef public void default_frame_callback(size_t size, void *data, void *user_data) with gil:
+    device = <Device>user_data
+    frame  = device.as_frame(size, data)
+    for callback in device._callbacks:
+        callback(frame)
+
 cdef class Device:
     """the main interface to ImagingSource cameras."""
 
     cdef Grabber    *_grabber
     cdef DeviceState _state
+    cdef FrameTypeDescriptor _desc
     cdef object      _props
     cdef object      _callbacks
 
-    cdef FrameNotificationSink         *_notification_sink
+    cdef smart_ptr[GrabberSinkType]    _frame_sink
     cdef FrameNotificationSinkListener *_notification_listener
 
     @classmethod
@@ -516,6 +535,9 @@ cdef class Device:
         # set up properties
         self._props = Properties(self)
 
+        self._desc      = FrameTypeDescriptor()
+        self._notification_listener = new DefaultFrameNotificationSinkListener(default_frame_callback,
+                                                                               <void *>self)
         self._callbacks = []
 
     def __dealloc__(self):
@@ -756,9 +778,24 @@ cdef class Device:
             _warnings.warn("prepare() is called when the device has been already set up.",
                            category=TISDeviceStatusWarning)
             return
+        # freeze frame type
+        self._desc._load(self._grabber.getVideoFormat().getFrameType())
+
         # prepare sink
+        self._frame_sink = as_sink(FrameNotificationSink.create(deref(self._notification_listener),
+                                                                self._desc._type))
+        if check_retval(self._grabber.setSinkType(self._frame_sink),
+                        "setSinkType() failed") == False:
+            LOGGER.warn(as_python_str(self._grabber.getLastError().toString()))
+            return
+
         # call prepareLive
-        # update status to READY + frame descriptor
+        if check_retval(self._grabber.prepareLive(False),
+                        "prepareLive() failed"):
+            LOGGER.warn(as_python_str(self._grabber.getLastError().toString()))
+            return
+
+        self._state = READY
 
     def start(self, update_descriptor=True):
         """starts the 'live' mode, beginning to acquire images."""
@@ -766,16 +803,26 @@ cdef class Device:
             _warnings.warn("the device is already in live.",
                            category=TISDeviceStatusWarning)
             return
-        # call startLive
-        # update status to RUNNING + frame descriptor (if needed)
+
+        if check_retval(self._grabber.startLive(False),
+                        "startLive() failed") == False:
+            LOGGER.warn(as_python_str(self._grabber.getLastError().toString()))
+            return
+
+        self._state = RUNNING
 
     def suspend(self):
         if self._state != RUNNING:
             _warnings.warn("suspend() is called when the device is not in live.",
                            category=TISDeviceStatusWarning)
             return
-        # call suspendLive
-        # update status to READY (no frame desc update)
+
+        if check_retval(self._grabber.suspendLive(),
+                        "suspendLive() failed") == False:
+            LOGGER.warn(as_python_str(self._grabber.getLastError().toString()))
+            return
+
+        self._state = READY
 
     def stop(self):
         """stops acquisition, rendering the device back to the idle state."""
@@ -783,9 +830,19 @@ cdef class Device:
             _warnings.warn("stop() is called when the device has not been set up.",
                            category=TISDeviceStatusWarning)
             return
-        # call stopLive
-        # update status to IDLE (+ frame desc)
-        # get rid of the sink
+
+        if check_retval(self._grabber.stopLive(),
+                        "stopLive() failed") == False:
+            LOGGER.warn(as_python_str(self._grabber.getLastError().toString()))
+            return
+
+        self._state = IDLE
+        # TODO: get rid of the sink
+        # since I am not really sure about what to do
+        # to remove the sink, I leave it as it is
+
+    cdef as_frame(self, size_t size, void *data):
+        pass
 
 cdef class Properties:
     """the pythonic interface to 'VCDProperties' controls."""

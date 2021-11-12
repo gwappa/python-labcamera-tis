@@ -57,7 +57,7 @@ extensions = [
     Extension(
         "labcamera_tis", ["labcamera_tis/*.pyx",
                           "labcamera_tis/property_utils.cpp",
-                          "labcamera_tis/listeners.cpp"],
+                          "labcamera_tis/sink_utils.cpp"],
         language="c++",
         include_dirs=["lib/include", "labcamera_tis"], # to be filled the user
         library_dirs=["lib/link",], # to be filled by the user
