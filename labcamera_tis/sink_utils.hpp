@@ -47,6 +47,7 @@ private:
     const FrameCallback callback_;
           void         *user_data_;
           size_t        size_;
+          size_t        buffer_count_;
 
           std::thread   thread_;
           std::mutex    io_;
@@ -79,17 +80,19 @@ public:
     void sinkDisconnected(DShowLib::FrameQueueSink& sink) override;
 
     void run(); // dequeues until canceled
+
+    void buffer_count(const size_t& value) {
+        buffer_count_ = value;
+    }
 };
 
-smart_ptr<DShowLib::GrabberSinkType> setup_sink(
-    smart_ptr<DShowLib::FrameNotificationSink> src,
-    size_t n_buffers
-);
+inline smart_ptr<DShowLib::GrabberSinkType> as_sink(
+    smart_ptr<DShowLib::FrameNotificationSink> src
+) { return src; }
 
-smart_ptr<DShowLib::GrabberSinkType> setup_sink(
-    smart_ptr<DShowLib::FrameQueueSink> src,
-    size_t n_buffers
-);
+inline smart_ptr<DShowLib::GrabberSinkType> as_sink(
+    smart_ptr<DShowLib::FrameQueueSink> src
+) { return src; }
 
 #define LISTENERS_HPP_
 #endif

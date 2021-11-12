@@ -45,7 +45,11 @@ void dequeue_context(DefaultFrameQueueSinkListener *listener) {
 }
 
 DefaultFrameQueueSinkListener::DefaultFrameQueueSinkListener(FrameCallback callback, void *user_data):
-    callback_(callback), user_data_(user_data), size_(0), quit_(false) { }
+    callback_(callback),
+    user_data_(user_data),
+    size_(0),
+    buffer_count_(0),
+    quit_(false) { }
 
 void DefaultFrameQueueSinkListener::sinkConnected(DShowLib::FrameQueueSink& sink, const DShowLib::FrameTypeInfo& info)
 {
@@ -53,6 +57,14 @@ void DefaultFrameQueueSinkListener::sinkConnected(DShowLib::FrameQueueSink& sink
     size_   = info.buffersize;
     quit_   = false; // just in case it is reused
     thread_ = std::thread(dequeue_context, this);
+
+    if (buffer_count_ > 0) {
+        DShowLib::Error ret = sink.allocAndQueueBuffers(buffer_count_);
+        if (ret.isError()) {
+            std::cerr << "***failed to allocate frames: "
+                      << ret.toString() << std::endl;
+        }
+    }
 }
 
 void DefaultFrameQueueSinkListener::framesQueued(DShowLib::FrameQueueSink& sink)
@@ -89,17 +101,21 @@ void DefaultFrameQueueSinkListener::run()
 
 bool DefaultFrameQueueSinkListener::wait_next_()
 {
-    if (sink_->getOutputQueueSize() == 0) {
+    while (sink_->getOutputQueueSize() == 0) {
         std::unique_lock<std::mutex> lock(io_);
         reception_.wait(lock);
+        if (quit_) {
+            return false;
+        }
     }
-    return !quit_;
+    return true;
 }
 
 void DefaultFrameQueueSinkListener::process_single_()
 {
     DShowLib::tFrameQueueBufferPtr frame = sink_->popOutputQueueBuffer();
-    callback_(size_, frame->getUserPointer(), user_data_);
+    callback_(size_, frame->getPtr(), user_data_);
+    sink_->queueBuffer(frame);
 }
 
 void DefaultFrameQueueSinkListener::mark_quit_()
@@ -107,25 +123,4 @@ void DefaultFrameQueueSinkListener::mark_quit_()
     std::unique_lock<std::mutex> lock(io_);
     quit_ = true;
     reception_.notify_all();
-}
-smart_ptr<DShowLib::GrabberSinkType> setup_sink(
-    smart_ptr<DShowLib::FrameNotificationSink> src,
-    size_t n_buffers
-) {
-    (void *)n_buffers; // NOT USED
-    return src;
-}
-
-smart_ptr<DShowLib::GrabberSinkType> setup_sink(
-    smart_ptr<DShowLib::FrameQueueSink> src,
-    size_t n_buffers
-) {
-    if (n_buffers > 0) {
-        DShowLib::Error ret = src->allocAndQueueBuffers(n_buffers);
-        if (ret.isError()) {
-            std::cerr << "failed to allocate input frame buffers: "
-                     << ret.toString() << std::endl;
-        }
-    }
-    return src;
 }

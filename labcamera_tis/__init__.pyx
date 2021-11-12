@@ -309,9 +309,10 @@ cdef extern from "sink_utils.hpp":
 
     cdef cppclass DefaultFrameQueueSinkListener(FrameQueueSinkListener):
         DefaultFrameQueueSinkListener(FrameCallback callback, void *user_data)
+        void buffer_count(const size_t& count)
 
-    smart_ptr[GrabberSinkType] setup_sink(smart_ptr[FrameNotificationSink] src, size_t n_buffers)
-    smart_ptr[GrabberSinkType] setup_sink(smart_ptr[FrameQueueSink] src, size_t n_buffers)
+    smart_ptr[GrabberSinkType] as_sink(smart_ptr[FrameNotificationSink] src)
+    smart_ptr[GrabberSinkType] as_sink(smart_ptr[FrameQueueSink] src)
 
 import warnings as _warnings
 import logging as _logging
@@ -533,7 +534,7 @@ cdef class Device:
 
     cdef smart_ptr[GrabberSinkType]    _frame_sink
     cdef FrameNotificationSinkListener *_notification_listener
-    cdef FrameQueueSinkListener        *_queue_listener
+    cdef DefaultFrameQueueSinkListener *_queue_listener
 
     @classmethod
     def list_names(cls):
@@ -822,13 +823,12 @@ cdef class Device:
 
         # prepare sink
         if buffers == 0:
-            self._frame_sink = setup_sink(FrameNotificationSink.create(deref(self._notification_listener),
-                                                                       self._desc._type),
-                                          n_buffers)
+            self._frame_sink = as_sink(FrameNotificationSink.create(deref(self._notification_listener),
+                                                                       self._desc._type))
         else:
-            self._frame_sink = setup_sink(FrameQueueSink.create(deref(self._queue_listener),
-                                                                self._desc._type),
-                                          n_buffers)
+            self._queue_listener.buffer_count(buffers)
+            self._frame_sink = as_sink(FrameQueueSink.create(deref(self._queue_listener),
+                                                                   self._desc._type))
         if check_retval(self._grabber.setSinkType(self._frame_sink),
                         "setSinkType() failed") == False:
             LOGGER.warn(as_python_str(self._grabber.getLastError().toString()))
