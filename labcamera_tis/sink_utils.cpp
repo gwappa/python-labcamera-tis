@@ -86,6 +86,10 @@ void DefaultFrameQueueSinkListener::sinkDisconnected(DShowLib::FrameQueueSink& s
     // mark end-of-acquisition
     callback_(0, nullptr, user_data_);
     sink_ = nullptr;
+
+    auto info = sink.getFrameCountInfo();
+    std::cerr << ">>> buffer stats: copied " << info.framesCopied
+              << " frames, dropped " << info.framesDropped << " frames" << std::endl;
 }
 
 void DefaultFrameQueueSinkListener::run()
