@@ -307,11 +307,11 @@ cdef extern from "sink_utils.hpp":
     cdef cppclass DefaultFrameNotificationSinkListener(FrameNotificationSinkListener):
         DefaultFrameNotificationSinkListener(FrameCallback callback, void *user_data)
 
-    cdef cppclass DefaultFrameQueueSinkListener:
-        pass
+    cdef cppclass DefaultFrameQueueSinkListener(FrameQueueSinkListener):
+        DefaultFrameQueueSinkListener(FrameCallback callback, void *user_data)
 
-    smart_ptr[GrabberSinkType] as_sink(smart_ptr[FrameNotificationSink]& src)
-    smart_ptr[GrabberSinkType] as_sink(smart_ptr[FrameQueueSink]& src)
+    smart_ptr[GrabberSinkType] setup_sink(smart_ptr[FrameNotificationSink] src, size_t n_buffers)
+    smart_ptr[GrabberSinkType] setup_sink(smart_ptr[FrameQueueSink] src, size_t n_buffers)
 
 import warnings as _warnings
 import logging as _logging
@@ -533,6 +533,7 @@ cdef class Device:
 
     cdef smart_ptr[GrabberSinkType]    _frame_sink
     cdef FrameNotificationSinkListener *_notification_listener
+    cdef FrameQueueSinkListener        *_queue_listener
 
     @classmethod
     def list_names(cls):
@@ -572,6 +573,8 @@ cdef class Device:
         self._desc      = FrameTypeDescriptor()
         self._notification_listener = new DefaultFrameNotificationSinkListener(default_frame_callback,
                                                                                <void *>self)
+        self._queue_listener = new DefaultFrameQueueSinkListener(default_frame_callback,
+                                                                 <void *>self)
         self._callbacks = []
 
     def __dealloc__(self):
@@ -808,6 +811,8 @@ cdef class Device:
 
     def prepare(self, buffers=0):
         """sets up acquisition for the 'live' mode."""
+        cdef size_t n_buffers = buffers
+
         if self._state >= READY:
             _warnings.warn("prepare() is called when the device has been already set up.",
                            category=TISDeviceStatusWarning)
@@ -816,8 +821,14 @@ cdef class Device:
         self._desc._load(self._grabber.getVideoFormat().getFrameType())
 
         # prepare sink
-        self._frame_sink = as_sink(FrameNotificationSink.create(deref(self._notification_listener),
-                                                                self._desc._type))
+        if buffers == 0:
+            self._frame_sink = setup_sink(FrameNotificationSink.create(deref(self._notification_listener),
+                                                                       self._desc._type),
+                                          n_buffers)
+        else:
+            self._frame_sink = setup_sink(FrameQueueSink.create(deref(self._queue_listener),
+                                                                self._desc._type),
+                                          n_buffers)
         if check_retval(self._grabber.setSinkType(self._frame_sink),
                         "setSinkType() failed") == False:
             LOGGER.warn(as_python_str(self._grabber.getLastError().toString()))

@@ -23,6 +23,9 @@
 */
 #ifndef LISTENERS_HPP_
 #include <tisudshl.h>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
 
 typedef void (*FrameCallback)(size_t size, void *data, void *user_data);
 
@@ -41,24 +44,52 @@ public:
 class DefaultFrameQueueSinkListener: public DShowLib::FrameQueueSinkListener
 {
 private:
-    const FrameCallback callback;
-          void         *user_data;
+    const FrameCallback callback_;
+          void         *user_data_;
+          size_t        size_;
 
+          std::thread   thread_;
+          std::mutex    io_;
+          std::condition_variable reception_;
+    volatile bool       quit_;
+          DShowLib::FrameQueueSink *sink_;
+
+    /**
+     *  waits for the next frame to be received
+     *  @return whether to continue waiting for frames
+     */
+    bool wait_next_();
+
+    /**
+     *  dequeues a frame from the frame queue sink
+     *  and runs the callback
+     */
+    void process_single_();
+
+    /**
+     *  marks so that the dequeueing thread knows that
+     *  it does not have to wait for frames any more.
+     */
+    void mark_quit_();
 public:
     DefaultFrameQueueSinkListener(FrameCallback callback, void *user_data);
 
-    void framesQueued(const DShowLib::FrameQueueSink& sink); // override;
+    void framesQueued(DShowLib::FrameQueueSink& sink) override;
     void sinkConnected(DShowLib::FrameQueueSink& sink, const DShowLib::FrameTypeInfo& info) override;
     void sinkDisconnected(DShowLib::FrameQueueSink& sink) override;
+
+    void run(); // dequeues until canceled
 };
 
-inline smart_ptr<DShowLib::GrabberSinkType> as_sink(smart_ptr<DShowLib::FrameNotificationSink>& src) {
-    return src;
-}
+smart_ptr<DShowLib::GrabberSinkType> setup_sink(
+    smart_ptr<DShowLib::FrameNotificationSink> src,
+    size_t n_buffers
+);
 
-inline smart_ptr<DShowLib::GrabberSinkType> as_sink(smart_ptr<DShowLib::FrameQueueSink>& src) {
-    return src;
-}
+smart_ptr<DShowLib::GrabberSinkType> setup_sink(
+    smart_ptr<DShowLib::FrameQueueSink> src,
+    size_t n_buffers
+);
 
 #define LISTENERS_HPP_
 #endif

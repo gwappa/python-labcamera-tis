@@ -22,6 +22,7 @@
  *  SOFTWARE.
 */
 #include "sink_utils.hpp"
+#include <iostream>
 
 DefaultFrameNotificationSinkListener::DefaultFrameNotificationSinkListener(FrameCallback callback, void *user_data):
     callback(callback), user_data(user_data) { }
@@ -35,23 +36,96 @@ void DefaultFrameNotificationSinkListener::frameReceived(DShowLib::IFrame &frame
 
 void DefaultFrameNotificationSinkListener::sinkDisconnected()
 {
+    // mark end-of-acquisition
     callback(0, nullptr, user_data);
 }
 
+void dequeue_context(DefaultFrameQueueSinkListener *listener) {
+    listener->run();
+}
+
 DefaultFrameQueueSinkListener::DefaultFrameQueueSinkListener(FrameCallback callback, void *user_data):
-    callback(callback), user_data(user_data) { }
+    callback_(callback), user_data_(user_data), size_(0), quit_(false) { }
 
 void DefaultFrameQueueSinkListener::sinkConnected(DShowLib::FrameQueueSink& sink, const DShowLib::FrameTypeInfo& info)
 {
-    // TODO
+    sink_   = &sink;
+    size_   = info.buffersize;
+    quit_   = false; // just in case it is reused
+    thread_ = std::thread(dequeue_context, this);
 }
 
-void DefaultFrameQueueSinkListener::framesQueued(const DShowLib::FrameQueueSink& sink)
+void DefaultFrameQueueSinkListener::framesQueued(DShowLib::FrameQueueSink& sink)
 {
-    // TODO
+    std::unique_lock<std::mutex> lock(io_);
+    quit_ = sink_->isCancelRequested();
+    reception_.notify_one(); // supposed to be the dequeue thread
 }
 
 void DefaultFrameQueueSinkListener::sinkDisconnected(DShowLib::FrameQueueSink& sink)
 {
-    // TODO
+    mark_quit_();
+    thread_.join();
+
+    while(sink_->getOutputQueueSize() > 0) {
+        process_single_();
+    }
+
+    // mark end-of-acquisition
+    callback_(0, nullptr, user_data_);
+    sink_ = nullptr;
+}
+
+void DefaultFrameQueueSinkListener::run()
+{
+    while(true)
+    {
+        if (!wait_next_()) {
+            break;
+        }
+        process_single_();
+    }
+}
+
+bool DefaultFrameQueueSinkListener::wait_next_()
+{
+    if (sink_->getOutputQueueSize() == 0) {
+        std::unique_lock<std::mutex> lock(io_);
+        reception_.wait(lock);
+    }
+    return !quit_;
+}
+
+void DefaultFrameQueueSinkListener::process_single_()
+{
+    DShowLib::tFrameQueueBufferPtr frame = sink_->popOutputQueueBuffer();
+    callback_(size_, frame->getUserPointer(), user_data_);
+}
+
+void DefaultFrameQueueSinkListener::mark_quit_()
+{
+    std::unique_lock<std::mutex> lock(io_);
+    quit_ = true;
+    reception_.notify_all();
+}
+smart_ptr<DShowLib::GrabberSinkType> setup_sink(
+    smart_ptr<DShowLib::FrameNotificationSink> src,
+    size_t n_buffers
+) {
+    (void *)n_buffers; // NOT USED
+    return src;
+}
+
+smart_ptr<DShowLib::GrabberSinkType> setup_sink(
+    smart_ptr<DShowLib::FrameQueueSink> src,
+    size_t n_buffers
+) {
+    if (n_buffers > 0) {
+        DShowLib::Error ret = src->allocAndQueueBuffers(n_buffers);
+        if (ret.isError()) {
+            std::cerr << "failed to allocate input frame buffers: "
+                     << ret.toString() << std::endl;
+        }
+    }
+    return src;
 }
