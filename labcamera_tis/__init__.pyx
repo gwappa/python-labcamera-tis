@@ -25,6 +25,9 @@ from libcpp cimport bool as cppbool
 from libcpp.vector cimport vector as stdvector
 from libcpp.string cimport string as stdstring
 from libc.stdint cimport uint8_t, uint32_t, int64_t, uint64_t
+cimport numpy as cnp
+
+cnp.import_array()
 
 cdef extern from "windows.h" nogil:
     cdef struct SIZE:
@@ -395,7 +398,23 @@ cdef class ColorFormatDescriptor:
             raise NotImplementedError(f"color format unimplemented for ffmpeg: {self}")
 
     @property
+    def typenum(self):
+        """returns the NumPy `type` enum-compatible value
+        according to this color format."""
+        if self._value == eRGB24:
+            return cnp.NPY_UINT8
+        elif self._value == eRGB32:
+            return cnp.NPY_UINT8
+        elif self._value == eY800:
+            return cnp.NPY_UINT8
+        elif self._value == eY16:
+            return cnp.NPY_UINT16
+        else:
+            raise NotImplementedError(f"color format unimplemented for typenum: {self}")
+
+    @property
     def dtype(self):
+        """returns the corresponding NumPy data-type object."""
         if self._value == eRGB24:
             return _np.uint8
         elif self._value == eRGB32:
@@ -420,9 +439,15 @@ cdef class ColorFormatDescriptor:
         else:
             raise NotImplementedError(f"color format unimplemented for per-pixel # of values: {self}")
 
+cdef struct NumpyFormatter:
+    int          ndims
+    cnp.npy_intp shape[3]
+    int          typenum
+
 cdef class FrameTypeDescriptor:
-    cdef FrameTypeInfo _type
-    cdef object        _colorfmt
+    cdef public NumpyFormatter formatter
+    cdef FrameTypeInfo  _type
+    cdef object         _colorfmt
 
     def __cinit__(self):
         self._colorfmt = ColorFormatDescriptor()
@@ -432,7 +457,16 @@ cdef class FrameTypeDescriptor:
 
     cdef _load(self, FrameTypeInfo type):
         self._type = type
-        self._colorfmt.value = self._type.getColorformat()
+        self._colorfmt.value  = self._type.getColorformat()
+
+        self.formatter.shape[0] = self._type.dim.cy # height
+        self.formatter.shape[1] = self._type.dim.cx # width
+        self.formatter.shape[2] = self._colorfmt.per_pixel
+        if self.formatter.shape[2] == 1:
+            self.formatter.ndims = 2
+        else:
+            self.formatter.ndims = 3
+        self.formatter.typenum  = self._colorfmt.typenum
 
     @property
     def color_format(self):
@@ -842,7 +876,16 @@ cdef class Device:
         # to remove the sink, I leave it as it is
 
     cdef as_frame(self, size_t size, void *data):
-        pass
+        cdef NumpyFormatter fmt = self._desc.formatter
+        if size == 0:
+            return None
+        else:
+            return cnp.PyArray_SimpleNewFromData(
+                    fmt.ndims,
+                    fmt.shape,
+                    fmt.typenum,
+                    data
+                  )
 
 cdef class Properties:
     """the pythonic interface to 'VCDProperties' controls."""

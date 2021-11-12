@@ -34,7 +34,7 @@ private:
 public:
     DefaultFrameNotificationSinkListener(FrameCallback callback, void *user_data);
     void sinkConnected(const DShowLib::FrameTypeInfo& info) override { };
-    void sinkDisconnected() override { };
+    void sinkDisconnected() override;
     void frameReceived(DShowLib::IFrame& frame) override;
 };
 

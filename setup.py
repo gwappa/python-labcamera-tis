@@ -59,7 +59,7 @@ extensions = [
                           "labcamera_tis/property_utils.cpp",
                           "labcamera_tis/sink_utils.cpp"],
         language="c++",
-        include_dirs=["lib/include", "labcamera_tis"], # to be filled the user
+        include_dirs=["lib/include", "labcamera_tis", numpy.get_include()], # to be filled the user
         library_dirs=["lib/link",], # to be filled by the user
         libraries=["tis_udshl12_x64",],
         define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")]

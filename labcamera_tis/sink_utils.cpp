@@ -33,6 +33,11 @@ void DefaultFrameNotificationSinkListener::frameReceived(DShowLib::IFrame &frame
              user_data);
 }
 
+void DefaultFrameNotificationSinkListener::sinkDisconnected()
+{
+    callback(0, nullptr, user_data);
+}
+
 DefaultFrameQueueSinkListener::DefaultFrameQueueSinkListener(FrameCallback callback, void *user_data):
     callback(callback), user_data(user_data) { }
 
