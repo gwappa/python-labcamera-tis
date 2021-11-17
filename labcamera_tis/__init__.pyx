@@ -220,6 +220,12 @@ cdef extern from "tisudshl.h" namespace "DShowLib" nogil:
         tVidFmtListPtr  getAvailableVideoFormats()
         VideoFormatItem getVideoFormat()
         cppbool         setVideoFormat(const stdstring& fmt)
+        cppbool         isFlipHAvailable()
+        cppbool         isFlipVAvailable()
+        cppbool         getFlipH()
+        cppbool         getFlipV()
+        cppbool         setFlipH(cppbool flip)
+        cppbool         setFlipV(cppbool flip)
 
         ## property-related
         smart_com[IVCDPropertyItems] getAvailableVCDProperties()
@@ -384,6 +390,10 @@ cdef class ColorFormatDescriptor:
     def value(self, tColorformatEnum value):
         self._value = value
 
+    @staticmethod
+    cdef cppbool is_vertically_flipped(int value):
+        return value in (eUYVY, eY800, eYGB1, eYGB0, eY16)
+
     @property
     def ffmpeg_style(self):
         if self._value == eRGB24:
@@ -538,6 +548,7 @@ cdef class Device:
     cdef smart_ptr[GrabberSinkType]    _frame_sink
     cdef FrameNotificationSinkListener *_notification_listener
     cdef DefaultFrameQueueSinkListener *_queue_listener
+    cdef cppbool _topdown
 
     @classmethod
     def list_names(cls):
@@ -632,6 +643,17 @@ cdef class Device:
         check_retval(self._grabber.setVideoFormat(fmt.encode(DEFAULT_ENCODING)),
                      "failed to update video format to: '" + fmt + "'",
                      type=RuntimeError)
+        if ColorFormatDescriptor.is_vertically_flipped(self._grabber.getVideoFormat().getFrameType().getColorformat()):
+            if self._grabber.isFlipVAvailable() == False:
+                LOGGER.warning("cannot flip images vertically in hardware")
+                self._topdown = True
+            elif check_retval(self._grabber.setFlipV(True),
+                             "failed to flip images vertically in hardware") == False:
+                self._topdown = True
+            else:
+                self._topdown = False
+        else:
+            self._topdown = False
         if DEBUG_FORMATS:
             colorfmt   = as_python_str(self._grabber.getVideoFormat().getColorformatString())
             fmtindex   = int(self._grabber.getVideoFormat().getFrameType().getColorformat())
@@ -909,12 +931,16 @@ cdef class Device:
         if size == 0:
             return None
         else:
-            return cnp.PyArray_SimpleNewFromData(
+            arr = cnp.PyArray_SimpleNewFromData(
                     fmt.ndims,
                     fmt.shape,
                     fmt.typenum,
                     data
                   )
+            if self._topdown:
+                return arr[::-1, :]
+            else:
+                return arr
 
 cdef class Properties:
     """the pythonic interface to 'VCDProperties' controls."""
