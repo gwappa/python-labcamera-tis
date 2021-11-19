@@ -312,6 +312,7 @@ cdef extern from "sink_utils.hpp":
 
     cdef cppclass DefaultFrameNotificationSinkListener(FrameNotificationSinkListener):
         DefaultFrameNotificationSinkListener(FrameCallback callback, void *user_data)
+        void setCallback(FrameCallback callback)
 
     cdef cppclass DefaultFrameQueueSinkListener(FrameQueueSinkListener):
         DefaultFrameQueueSinkListener(FrameCallback callback, void *user_data)
@@ -546,8 +547,8 @@ cdef class Device:
     cdef object      _callbacks
 
     cdef smart_ptr[GrabberSinkType]    _frame_sink
-    cdef FrameNotificationSinkListener *_notification_listener
-    cdef DefaultFrameQueueSinkListener *_queue_listener
+    cdef DefaultFrameNotificationSinkListener *_notification_listener
+    cdef DefaultFrameQueueSinkListener        *_queue_listener
     cdef cppbool _topdown
 
     @classmethod
@@ -851,6 +852,12 @@ cdef class Device:
         # freeze frame type
         self._desc._load(self._grabber.getVideoFormat().getFrameType())
 
+        # setup callback
+        if len(self._callbacks) == 0:
+            self._notification_listener.setCallback(NULL)
+        else:
+            self._notification_listener.setCallback(default_frame_callback)
+
         # prepare sink
         if buffer_size == 0:
             self._frame_sink = as_sink(FrameNotificationSink.create(deref(self._notification_listener),
@@ -872,7 +879,7 @@ cdef class Device:
 
         self._state = READY
 
-    def start(self, buffer_size=0):
+    def start(self, buffer_size=0, strobe=False):
         """starts the 'live' mode, beginning to acquire images."""
         if self._state == RUNNING:
             _warnings.warn("the device is already in live.",
@@ -881,6 +888,7 @@ cdef class Device:
         elif self._state < READY:
             self.prepare(buffer_size)
 
+        self.strobe = strobe
         if check_retval(self._grabber.startLive(False),
                         "startLive() failed") == False:
             LOGGER.warn(as_python_str(self._grabber.getLastError().toString()))
@@ -888,12 +896,13 @@ cdef class Device:
 
         self._state = RUNNING
 
-    def suspend(self):
+    def suspend(self, strobe=False):
         if self._state != RUNNING:
             _warnings.warn("suspend() is called when the device is not in live.",
                            category=TISDeviceStatusWarning)
             return
 
+        self.strobe = strobe
         if check_retval(self._grabber.suspendLive(),
                         "suspendLive() failed") == False:
             LOGGER.warn(as_python_str(self._grabber.getLastError().toString()))
@@ -901,19 +910,20 @@ cdef class Device:
 
         self._state = READY
 
-    def stop(self):
+    def stop(self, strobe=False):
         """stops acquisition, rendering the device back to the idle state."""
         if self._state < READY:
             _warnings.warn("stop() is called when the device has not been set up.",
                            category=TISDeviceStatusWarning)
             return
 
-        LOGGER.info("calling stopLive()")
         if check_retval(self._grabber.stopLive(),
                         "stopLive() failed") == False:
+            self.strobe = strobe
             LOGGER.warn(as_python_str(self._grabber.getLastError().toString()))
             return
 
+        self.strobe = strobe
         self._state = IDLE
         # TODO: get rid of the sink
         # since I am not really sure about what to do

@@ -25,19 +25,36 @@
 #include <iostream>
 
 DefaultFrameNotificationSinkListener::DefaultFrameNotificationSinkListener(FrameCallback callback, void *user_data):
-    callback(callback), user_data(user_data) { }
+    callback_(callback), user_data_(user_data), count_(0) { }
+
+void DefaultFrameNotificationSinkListener::setCallback(FrameCallback callback)
+{
+    callback_ = callback;
+}
 
 void DefaultFrameNotificationSinkListener::frameReceived(DShowLib::IFrame &frame)
 {
-    callback(frame.getActualDataSize(),
-             frame.getPtr(),
-             user_data);
+    count_++;
+    if (callback_ != nullptr) {
+        callback_(frame.getActualDataSize(),
+                 frame.getPtr(),
+                 user_data_);
+    }
+}
+
+void DefaultFrameNotificationSinkListener::sinkConnected(const DShowLib::FrameTypeInfo& info)
+{
+    count_ = 0;
 }
 
 void DefaultFrameNotificationSinkListener::sinkDisconnected()
 {
-    // mark end-of-acquisition
-    callback(0, nullptr, user_data);
+    if (callback_ != nullptr) {
+        // mark end-of-acquisition
+        callback_(0, nullptr, user_data_);
+    }
+
+    std::cerr << "received " << count_ << " frames in total" << std::endl;
 }
 
 void dequeue_context(DefaultFrameQueueSinkListener *listener) {

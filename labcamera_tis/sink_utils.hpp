@@ -32,11 +32,13 @@ typedef void (*FrameCallback)(size_t size, void *data, void *user_data);
 class DefaultFrameNotificationSinkListener: public DShowLib::FrameNotificationSinkListener
 {
 private:
-    const FrameCallback callback;
-          void         *user_data;
+    FrameCallback callback_;
+    void         *user_data_;
+    size_t        count_;
 public:
     DefaultFrameNotificationSinkListener(FrameCallback callback, void *user_data);
-    void sinkConnected(const DShowLib::FrameTypeInfo& info) override { };
+    void setCallback(FrameCallback callback);
+    void sinkConnected(const DShowLib::FrameTypeInfo& info) override;
     void sinkDisconnected() override;
     void frameReceived(DShowLib::IFrame& frame) override;
 };
